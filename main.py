@@ -213,41 +213,36 @@ def get_current_user_lazy():
     from middleware.auth import get_current_user
     return get_current_user
 
-def get_current_user_optional():
+def get_current_user_optional(request: Request) -> Optional[Dict[str, Any]]:
     """Optional authentication - returns None if no valid token provided"""
-    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-    from fastapi import Request
     import jwt
     import os
     
-    def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
-        try:
-            auth_header = request.headers.get("authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                print("[DEBUG] No authorization header found, proceeding without authentication")
-                return None
-                
-            token = auth_header.split(" ")[1]
-            jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
-            
-            if not jwt_secret:
-                print("[DEBUG] JWT secret not configured, proceeding without authentication")
-                return None
-                
-            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-            user_data = {
-                "id": payload.get("sub"),
-                "email": payload.get("email"),
-                "role": payload.get("role", "user")
-            }
-            print(f"[DEBUG] Authentication successful for user: {user_data.get('email')}")
-            return user_data
-            
-        except Exception as e:
-            print(f"[DEBUG] Authentication failed: {str(e)}, proceeding without authentication")
+    try:
+        auth_header = request.headers.get("authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            print("[DEBUG] No authorization header found, proceeding without authentication")
             return None
-    
-    return optional_auth
+            
+        token = auth_header.split(" ")[1]
+        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+        
+        if not jwt_secret:
+            print("[DEBUG] JWT secret not configured, proceeding without authentication")
+            return None
+            
+        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        user_data = {
+            "id": payload.get("sub"),
+            "email": payload.get("email"),
+            "role": payload.get("role", "user")
+        }
+        print(f"[DEBUG] Authentication successful for user: {user_data.get('email')}")
+        return user_data
+        
+    except Exception as e:
+        print(f"[DEBUG] Authentication failed: {str(e)}, proceeding without authentication")
+        return None
 
 @app.post("/api/transcribe")
 async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_lazy)):
