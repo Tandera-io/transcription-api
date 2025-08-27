@@ -245,7 +245,7 @@ def get_current_user_optional(request: Request) -> Optional[Dict[str, Any]]:
         return None
 
 @app.post("/api/transcribe")
-async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_lazy)):
+async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
     try:
         from services.assembly_service import AssemblyAIService
         from services.download_service import DownloadService
@@ -277,13 +277,22 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
 
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
+        
+        print(f"[DEBUG] URL transcription completed, text length: {len(text)} characters")
+        print(f"[DEBUG] Current user: {current_user}")
+        print(f"[DEBUG] User ID: {user_id}")
+        print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
         process_and_save_transcription(text, job_id, req.video_url, req.title or os.path.basename(req.video_url), user_id)
+        print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        print(f"[ERROR] URL transcribe endpoint failed: {str(e)}")
+        import traceback
+        print(f"[ERROR] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(500, f"Erro interno: {str(e)}")
 
 
 @app.post("/api/transcribe/upload")
