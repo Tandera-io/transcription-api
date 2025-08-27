@@ -184,10 +184,15 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
             raise HTTPException(500, f"Erro no upload: {upload.get('error')}")
 
         url = upload.get("upload_url")
+        if not url:
+            raise HTTPException(500, "URL de upload não encontrada")
         trans = assembly.start_transcription(url)
         if not trans.get("success"):
             raise HTTPException(500, f"Erro ao iniciar transcrição: {trans.get('error')}")
-        final = assembly.wait_for_completion(trans.get("transcript_id"))
+        transcript_id = trans.get("transcript_id")
+        if not transcript_id:
+            raise HTTPException(500, "ID da transcrição não encontrado")
+        final = assembly.wait_for_completion(transcript_id)
         if not final.get("success"):
             raise HTTPException(500, f"Erro na transcrição: {final.get('error')}")
 
@@ -223,10 +228,16 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         upload = assembly.upload_file(audio_path)
         if not upload.get("success"):
             raise HTTPException(500, f"Erro no upload: {upload.get('error')}")
-        trans = assembly.start_transcription(upload.get("upload_url"))
+        upload_url = upload.get("upload_url")
+        if not upload_url:
+            raise HTTPException(500, "URL de upload não encontrada")
+        trans = assembly.start_transcription(upload_url)
         if not trans.get("success"):
             raise HTTPException(500, f"Erro ao iniciar transcrição: {trans.get('error')}")
-        final = assembly.wait_for_completion(trans.get("transcript_id"))
+        transcript_id = trans.get("transcript_id")
+        if not transcript_id:
+            raise HTTPException(500, "ID da transcrição não encontrado")
+        final = assembly.wait_for_completion(transcript_id)
         if not final.get("success"):
             raise HTTPException(500, f"Erro na transcrição: {final.get('error')}")
 
