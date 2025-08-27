@@ -9,6 +9,7 @@ from datetime import datetime
 import os
 import uuid
 import json
+import urllib.parse
 
 
 
@@ -54,6 +55,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _clean_filename_from_url(url: str) -> str:
+    """Extract and clean filename from URL, removing URL encoding and query parameters"""
+    try:
+        parsed_url = urllib.parse.urlparse(url)
+        filename = os.path.basename(parsed_url.path)
+        clean_filename = urllib.parse.unquote(filename)
+        
+        if not clean_filename or clean_filename == '/':
+            clean_filename = "video_file"
+            
+        print(f"[DEBUG] Cleaned filename: '{url}' -> '{clean_filename}'")
+        return clean_filename
+    except Exception as e:
+        print(f"[ERROR] Failed to clean filename from URL: {str(e)}")
+        try:
+            return os.path.basename(url.split('?')[0])
+        except:
+            return "video_file"
 
 
 def _extract_json_from_text(text: str) -> dict:
@@ -278,11 +299,14 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
         
+        clean_filename = req.title or _clean_filename_from_url(req.video_url)
+        
         print(f"[DEBUG] URL transcription completed, text length: {len(text)} characters")
         print(f"[DEBUG] Current user: {current_user}")
         print(f"[DEBUG] User ID: {user_id}")
+        print(f"[DEBUG] Clean filename: {clean_filename}")
         print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
-        process_and_save_transcription(text, job_id, req.video_url, req.title or os.path.basename(req.video_url), user_id)
+        process_and_save_transcription(text, job_id, req.video_url, clean_filename, user_id)
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
