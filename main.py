@@ -10,11 +10,6 @@ import os
 import uuid
 import json
 
-from services.assembly_service import AssemblyAIService
-from services.download_service import DownloadService
-from services.supabase_service import insert_transcription, update_transcription
-from services.openai_service import gpt_4_completion
-from middleware.auth import get_current_user
 
 
 class TranscriptionRequest(BaseModel):
@@ -31,6 +26,18 @@ class TranscriptionResponse(BaseModel):
 
 
 app = FastAPI(title="Tandera Transcription API", version="1.0.0")
+
+@app.on_event("startup")
+async def startup_event():
+    """Log environment status without blocking startup"""
+    required_vars = ["SUPABASE_URL", "SUPABASE_KEY", "OPENAI_API_KEY", "ASSEMBLYAI_API_KEY"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        print(f"⚠️  Missing environment variables: {', '.join(missing_vars)}")
+        print("ℹ️  Some features may not work until these are configured")
+    else:
+        print("✅ All required environment variables are configured")
 
 cors_env = os.getenv("CORS_ORIGINS", "").strip()
 if cors_env:
@@ -77,6 +84,8 @@ def _extract_json_from_text(text: str) -> dict:
 
 def process_and_save_transcription(transcription_text: str, job_id: str, video_url: str, file_name: str,
                                    user_id: Optional[str] = None):
+    from services.openai_service import gpt_4_completion
+    from services.supabase_service import insert_transcription, update_transcription
     # Prompt detalhado (igual ao backend principal)
     prompt = f"""
 Analise a seguinte transcrição de reunião de forma MUITO DETALHADA e retorne APENAS um JSON válido em português brasileiro.
@@ -176,9 +185,16 @@ def health_simple():
     return {"status": "ok"}
 
 
+def get_current_user_lazy():
+    from middleware.auth import get_current_user
+    return get_current_user
+
 @app.post("/api/transcribe")
-async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user)):
+async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_lazy)):
     try:
+        from services.assembly_service import AssemblyAIService
+        from services.download_service import DownloadService
+        
         job_id = str(uuid.uuid4())
         download = DownloadService()
         dl = download.download_file(req.video_url, job_id)
@@ -216,8 +232,11 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_lazy)):
     try:
+        from services.assembly_service import AssemblyAIService
+        from services.download_service import DownloadService
+        
         job_id = str(uuid.uuid4())
         temp_path = f"/tmp/{job_id}_{file.filename}"
         with open(temp_path, "wb") as f:
