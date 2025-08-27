@@ -86,6 +86,9 @@ def process_and_save_transcription(transcription_text: str, job_id: str, video_u
                                    user_id: Optional[str] = None):
     from services.openai_service import gpt_4_completion
     from services.supabase_service import insert_transcription, update_transcription
+    
+    print(f"[DEBUG] Starting process_and_save_transcription for job_id: {job_id}")
+    print(f"[DEBUG] Transcription text length: {len(transcription_text)} characters")
     # Prompt detalhado (igual ao backend principal)
     prompt = f"""
 Analise a seguinte transcrição de reunião de forma MUITO DETALHADA e retorne APENAS um JSON válido em português brasileiro.
@@ -125,9 +128,13 @@ REGRAS IMPORTANTES:
 """
 
     try:
+        print(f"[DEBUG] Calling OpenAI GPT-4 for analysis...")
         result_text = gpt_4_completion(prompt, max_tokens=2000)
+        print(f"[DEBUG] OpenAI response received, length: {len(result_text)} characters")
         parsed = _extract_json_from_text(result_text)
-    except Exception:
+        print(f"[DEBUG] JSON parsing successful, keys: {list(parsed.keys())}")
+    except Exception as e:
+        print(f"[ERROR] OpenAI processing failed: {str(e)}")
         parsed = {}
 
     title = parsed.get('title') or f"Reunião - {file_name}"
@@ -150,8 +157,19 @@ REGRAS IMPORTANTES:
         "reuniao": file_name,
         "user_id": user_id,
     }
-    res = insert_transcription(data)
-    transcription_id = res.data[0]['id']
+    try:
+        print(f"[DEBUG] Inserting transcription data into Supabase...")
+        res = insert_transcription(data)
+        print(f"[DEBUG] Insert response: {res}")
+        
+        if not res or not hasattr(res, 'data') or not res.data:
+            raise Exception(f"Insert failed - invalid response: {res}")
+            
+        transcription_id = res.data[0]['id']
+        print(f"[DEBUG] Transcription inserted with ID: {transcription_id}")
+    except Exception as e:
+        print(f"[ERROR] Failed to insert transcription: {str(e)}")
+        raise Exception(f"Database insert failed: {str(e)}")
 
     update_data = {
         "status": "completed",
@@ -166,7 +184,13 @@ REGRAS IMPORTANTES:
         "title": title,
         "reuniao": file_name,
     }
-    update_transcription(transcription_id, update_data)
+    try:
+        print(f"[DEBUG] Updating transcription {transcription_id} with analysis data...")
+        update_result = update_transcription(transcription_id, update_data)
+        print(f"[DEBUG] Update successful: {update_result}")
+    except Exception as e:
+        print(f"[ERROR] Failed to update transcription: {str(e)}")
+        raise Exception(f"Database update failed: {str(e)}")
 
 
 @app.get("/api/health")
@@ -270,13 +294,19 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
 
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
+        
+        print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
         process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id)
+        print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        print(f"[ERROR] Upload endpoint failed: {str(e)}")
+        import traceback
+        print(f"[ERROR] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(500, f"Erro interno: {str(e)}")
 
 
 if __name__ == "__main__":
