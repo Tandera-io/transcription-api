@@ -162,10 +162,18 @@ REGRAS IMPORTANTES:
 
 @app.get("/api/health")
 def health():
+    """Simple health check that doesn't depend on external services"""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
+        "service": "transcription-api",
+        "version": "1.0.0"
     }
+
+@app.get("/health")
+def health_simple():
+    """Alternative health check endpoint without /api prefix"""
+    return {"status": "ok"}
 
 
 @app.post("/api/transcribe")
