@@ -213,6 +213,42 @@ def get_current_user_lazy():
     from middleware.auth import get_current_user
     return get_current_user
 
+def get_current_user_optional():
+    """Optional authentication - returns None if no valid token provided"""
+    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+    from fastapi import Request
+    import jwt
+    import os
+    
+    def optional_auth(request: Request) -> Optional[Dict[str, Any]]:
+        try:
+            auth_header = request.headers.get("authorization")
+            if not auth_header or not auth_header.startswith("Bearer "):
+                print("[DEBUG] No authorization header found, proceeding without authentication")
+                return None
+                
+            token = auth_header.split(" ")[1]
+            jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+            
+            if not jwt_secret:
+                print("[DEBUG] JWT secret not configured, proceeding without authentication")
+                return None
+                
+            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+            user_data = {
+                "id": payload.get("sub"),
+                "email": payload.get("email"),
+                "role": payload.get("role", "user")
+            }
+            print(f"[DEBUG] Authentication successful for user: {user_data.get('email')}")
+            return user_data
+            
+        except Exception as e:
+            print(f"[DEBUG] Authentication failed: {str(e)}, proceeding without authentication")
+            return None
+    
+    return optional_auth
+
 @app.post("/api/transcribe")
 async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_lazy)):
     try:
@@ -256,7 +292,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_lazy)):
+async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
     try:
         from services.assembly_service import AssemblyAIService
         from services.download_service import DownloadService
@@ -295,6 +331,9 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
         
+        print(f"[DEBUG] Transcription completed, text length: {len(text)} characters")
+        print(f"[DEBUG] Current user: {current_user}")
+        print(f"[DEBUG] User ID: {user_id}")
         print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
         process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id)
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
