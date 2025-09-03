@@ -10,6 +10,10 @@ import os
 import uuid
 import json
 import urllib.parse
+import hashlib
+import threading
+
+from supabase import create_client, Client
 
 
 
@@ -33,7 +37,6 @@ async def startup_event():
     """Log environment status without blocking startup"""
     required_vars = ["SUPABASE_URL", "SUPABASE_KEY", "OPENAI_API_KEY", "ASSEMBLYAI_API_KEY"]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
-    
     if missing_vars:
         print(f"⚠️  Missing environment variables: {', '.join(missing_vars)}")
         print("ℹ️  Some features may not work until these are configured")
@@ -57,23 +60,69 @@ app.add_middleware(
 )
 
 
+"""Idempotência e cliente Supabase"""
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+_supabase_client: Optional[Client] = None
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception:
+    _supabase_client = None
+
+_locks_guard = threading.Lock()
+_hash_locks: Dict[str, threading.Lock] = {}
+
+
+def _get_lock_for(key: str) -> threading.Lock:
+    with _locks_guard:
+        lock = _hash_locks.get(key)
+        if not lock:
+            lock = threading.Lock()
+            _hash_locks[key] = lock
+        return lock
+
+
+def _sha256_str(value: str) -> str:
+    return hashlib.sha256((value or "").strip().encode("utf-8")).hexdigest()
+
+
+def _find_transcription_by_hash(url_hash: str) -> Optional[Dict[str, Any]]:
+    if not _supabase_client or not url_hash:
+        return None
+    try:
+        res = (
+            _supabase_client
+            .table("transcriptions")
+            .select("id, job_id, status")
+            .eq("url_hash", url_hash)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(res, "data", None)
+        if data and len(data) > 0:
+            return data[0]
+    except Exception:
+        return None
+    return None
+
+
 def _clean_filename_from_url(url: str) -> str:
     """Extract and clean filename from URL, removing URL encoding and query parameters"""
     try:
         parsed_url = urllib.parse.urlparse(url)
         filename = os.path.basename(parsed_url.path)
         clean_filename = urllib.parse.unquote(filename)
-        
         if not clean_filename or clean_filename == '/':
             clean_filename = "video_file"
-            
         print(f"[DEBUG] Cleaned filename: '{url}' -> '{clean_filename}'")
         return clean_filename
     except Exception as e:
         print(f"[ERROR] Failed to clean filename from URL: {str(e)}")
         try:
             return os.path.basename(url.split('?')[0])
-        except:
+        except Exception:
             return "video_file"
 
 
@@ -104,10 +153,9 @@ def _extract_json_from_text(text: str) -> dict:
 
 
 def process_and_save_transcription(transcription_text: str, job_id: str, video_url: str, file_name: str,
-                                   user_id: Optional[str] = None):
+                                   user_id: Optional[str] = None, url_hash: Optional[str] = None):
     from services.openai_service import gpt_4_completion
     from services.supabase_service import insert_transcription, update_transcription
-    
     print(f"[DEBUG] Starting process_and_save_transcription for job_id: {job_id}")
     print(f"[DEBUG] Transcription text length: {len(transcription_text)} characters")
     # Prompt detalhado (igual ao backend principal)
@@ -178,19 +226,25 @@ REGRAS IMPORTANTES:
         "reuniao": file_name,
         "user_id": user_id,
     }
+    if url_hash:
+        data["url_hash"] = url_hash
+    # Se já existir um registro com o mesmo hash, não inserir outro
+    transcription_id = None
+    existing = None
     try:
+        if url_hash:
+            existing = _find_transcription_by_hash(url_hash)
+            if existing:
+                transcription_id = existing["id"]
+    except Exception:
+        existing = None
+    if transcription_id is None:
         print(f"[DEBUG] Inserting transcription data into Supabase...")
         res = insert_transcription(data)
-        print(f"[DEBUG] Insert response: {res}")
-        
         if not res or not hasattr(res, 'data') or not res.data:
             raise Exception(f"Insert failed - invalid response: {res}")
-            
         transcription_id = res.data[0]['id']
         print(f"[DEBUG] Transcription inserted with ID: {transcription_id}")
-    except Exception as e:
-        print(f"[ERROR] Failed to insert transcription: {str(e)}")
-        raise Exception(f"Database insert failed: {str(e)}")
 
     update_data = {
         "status": "completed",
@@ -216,7 +270,6 @@ REGRAS IMPORTANTES:
 
 @app.get("/api/health")
 def health():
-    """Simple health check that doesn't depend on external services"""
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -278,6 +331,19 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
             raise HTTPException(500, f"Erro no download: {dl['error']}")
 
         file_path = dl["file_path"]
+        file_hash = dl.get("file_hash")
+        url_hash = f"content:{file_hash}" if file_hash else f"url:{_sha256_str(req.video_url)}"
+
+        # Evita duplicação dentro da mesma réplica
+        lock = _get_lock_for(url_hash)
+        with lock:
+            existing = _find_transcription_by_hash(url_hash)
+            if existing and existing.get("status") in ("processing", "completed"):
+                return TranscriptionResponse(
+                    job_id=existing.get("job_id") or job_id,
+                    message="Transcrição já existente",
+                    status=existing.get("status") or "done"
+                )
         assembly = AssemblyAIService()
         upload = assembly.upload_file(file_path)
         if not upload.get("success"):
@@ -298,15 +364,20 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
 
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
-        
         clean_filename = req.title or _clean_filename_from_url(req.video_url)
-        
         print(f"[DEBUG] URL transcription completed, text length: {len(text)} characters")
         print(f"[DEBUG] Current user: {current_user}")
         print(f"[DEBUG] User ID: {user_id}")
         print(f"[DEBUG] Clean filename: {clean_filename}")
         print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
-        process_and_save_transcription(text, job_id, req.video_url, clean_filename, user_id)
+        process_and_save_transcription(
+            text,
+            job_id,
+            req.video_url,
+            clean_filename,
+            user_id,
+            url_hash=url_hash,
+        )
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
@@ -340,6 +411,20 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
             if not extraction["success"]:
                 raise HTTPException(500, f"Erro ao extrair áudio: {extraction['error']}")
 
+        # Idempotência baseada no conteúdo do arquivo
+        file_hash = download._calculate_file_hash(audio_path)
+        url_hash = f"upload:{file_hash}"
+
+        lock = _get_lock_for(url_hash)
+        with lock:
+            existing = _find_transcription_by_hash(url_hash)
+            if existing and existing.get("status") in ("processing", "completed"):
+                return TranscriptionResponse(
+                    job_id=existing.get("job_id") or job_id,
+                    message="Transcrição já existente",
+                    status=existing.get("status") or "done"
+                )
+
         upload = assembly.upload_file(audio_path)
         if not upload.get("success"):
             raise HTTPException(500, f"Erro no upload: {upload.get('error')}")
@@ -358,12 +443,11 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
 
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
-        
         print(f"[DEBUG] Transcription completed, text length: {len(text)} characters")
         print(f"[DEBUG] Current user: {current_user}")
         print(f"[DEBUG] User ID: {user_id}")
         print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
-        process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id)
+        process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id, url_hash=url_hash)
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
