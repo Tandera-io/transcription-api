@@ -95,11 +95,14 @@ class AssemblyAIService:
             logger.info(f"Iniciando upload do arquivo: {file_path} ({file_size} bytes)")
             logger.debug(f"Arquivo encontrado e pronto para upload: {file_path}")
             
+            # Enviar RAW bytes conforme a documentação da AssemblyAI
+            # Importante: NÃO usar multipart (files={"file": f}), pois isso corrompe o payload
+            # e resulta em "Transcoding failed. File does not appear to contain audio."
             with open(file_path, "rb") as f:
                 response = requests.post(
                     f"{self.base_url}/upload",
-                    headers=self.headers,
-                    files={"file": f},  # campo correto
+                    headers={**self.headers, "Content-Type": "application/octet-stream"},
+                    data=f,
                     timeout=300  # 5 minutos timeout
                 )
             
