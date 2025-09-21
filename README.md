@@ -9,6 +9,14 @@ API de transcrição (AssemblyAI) + enriquecimento OpenAI separada do monolito.
 
 Autenticação: Supabase JWT via header `Authorization: Bearer <token>`.
 
+### Idempotência e reprocessamento
+- O serviço usa `url_hash` do conteúdo para não duplicar transcrições.
+- Se já houver registro `completed`, a API retorna imediatamente esse job.
+- Se houver registro `processing`, a API considera STALE após `PROCESSING_STALE_MINUTES` (padrão 120) e reprocessa.
+- Para forçar reprocessamento imediato:
+  - URL: envie `{"video_url": "...", "force": true}`.
+  - Upload: use query `?force=true` no endpoint de upload.
+
 ## Variáveis de ambiente
 - SUPABASE_URL
 - SUPABASE_KEY

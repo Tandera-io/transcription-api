@@ -22,6 +22,7 @@ class TranscriptionRequest(BaseModel):
     title: Optional[str] = None
     meeting_type: Optional[str] = None
     participants: Optional[List[str]] = None
+    force: Optional[bool] = False
 
 
 class TranscriptionResponse(BaseModel):
@@ -94,7 +95,7 @@ def _find_transcription_by_hash(url_hash: str) -> Optional[Dict[str, Any]]:
         res = (
             _supabase_client
             .table("transcriptions")
-            .select("id, job_id, status")
+            .select("id, job_id, status, created_at")
             .eq("url_hash", url_hash)
             .order("created_at", desc=True)
             .limit(1)
@@ -106,6 +107,26 @@ def _find_transcription_by_hash(url_hash: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return None
+
+
+def _is_stale_processing(record: Dict[str, Any], stale_minutes: int = None) -> bool:
+    """Return True if a processing record is considered stale based on created_at."""
+    try:
+        from datetime import timezone, timedelta
+        minutes = stale_minutes or int(os.getenv("PROCESSING_STALE_MINUTES", "120"))
+        created_at_str = record.get("created_at")
+        if not created_at_str:
+            return False
+        # Support both isoformat with/without timezone
+        try:
+            created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        except Exception:
+            return False
+        now = datetime.now(tz=created.tzinfo or timezone.utc)
+        age = now - created
+        return age >= timedelta(minutes=minutes)
+    except Exception:
+        return False
 
 
 def _clean_filename_from_url(url: str) -> str:
@@ -338,12 +359,27 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
         lock = _get_lock_for(url_hash)
         with lock:
             existing = _find_transcription_by_hash(url_hash)
-            if existing and existing.get("status") in ("processing", "completed"):
-                return TranscriptionResponse(
-                    job_id=existing.get("job_id") or job_id,
-                    message="Transcrição já existente",
-                    status=existing.get("status") or "done"
-                )
+            if existing:
+                status = existing.get("status")
+                is_stale = status == "processing" and _is_stale_processing(existing)
+                if req.force:
+                    print(f"[DEBUG] Force=true - ignorando dedupe. Existing id={existing.get('id')} status={status} stale={is_stale}")
+                elif status == "completed":
+                    print(f"[DEBUG] Dedup hit (completed). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
+                    return TranscriptionResponse(
+                        job_id=existing.get("job_id") or job_id,
+                        message="Transcrição já existente",
+                        status="done"
+                    )
+                elif status == "processing" and not is_stale:
+                    print(f"[DEBUG] Dedup hit (processing, not stale). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
+                    return TranscriptionResponse(
+                        job_id=existing.get("job_id") or job_id,
+                        message="Transcrição em processamento. Reenvie com force=true para reprocessar",
+                        status="processing"
+                    )
+                else:
+                    print(f"[DEBUG] Existing processing appears stale. Continuing to reprocess. id={existing.get('id')}")
         assembly = AssemblyAIService()
         upload = assembly.upload_file(file_path)
         if not upload.get("success"):
@@ -391,7 +427,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
+async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), force: bool = False, current_user: Optional[Dict[str, Any]] = Depends(get_current_user_optional)):
     try:
         from services.assembly_service import AssemblyAIService
         from services.download_service import DownloadService
@@ -418,12 +454,27 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         lock = _get_lock_for(url_hash)
         with lock:
             existing = _find_transcription_by_hash(url_hash)
-            if existing and existing.get("status") in ("processing", "completed"):
-                return TranscriptionResponse(
-                    job_id=existing.get("job_id") or job_id,
-                    message="Transcrição já existente",
-                    status=existing.get("status") or "done"
-                )
+            if existing:
+                status = existing.get("status")
+                is_stale = status == "processing" and _is_stale_processing(existing)
+                if force:
+                    print(f"[DEBUG] Force=true - ignorando dedupe. Existing id={existing.get('id')} status={status} stale={is_stale}")
+                elif status == "completed":
+                    print(f"[DEBUG] Dedup hit (completed). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
+                    return TranscriptionResponse(
+                        job_id=existing.get("job_id") or job_id,
+                        message="Transcrição já existente",
+                        status="done"
+                    )
+                elif status == "processing" and not is_stale:
+                    print(f"[DEBUG] Dedup hit (processing, not stale). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
+                    return TranscriptionResponse(
+                        job_id=existing.get("job_id") or job_id,
+                        message="Transcrição em processamento. Reenvie com force=true para reprocessar",
+                        status="processing"
+                    )
+                else:
+                    print(f"[DEBUG] Existing processing appears stale. Continuing to reprocess. id={existing.get('id')}")
 
         upload = assembly.upload_file(audio_path)
         if not upload.get("success"):
