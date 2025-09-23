@@ -174,7 +174,8 @@ def _extract_json_from_text(text: str) -> dict:
 
 
 def process_and_save_transcription(transcription_text: str, job_id: str, video_url: str, file_name: str,
-                                   user_id: Optional[str] = None, url_hash: Optional[str] = None):
+                                   user_id: Optional[str] = None, url_hash: Optional[str] = None,
+                                   allow_duplicate_insert: bool = False):
     from services.openai_service import gpt_4_completion
     from services.supabase_service import insert_transcription, update_transcription
     print(f"[DEBUG] Starting process_and_save_transcription for job_id: {job_id}")
@@ -249,11 +250,11 @@ REGRAS IMPORTANTES:
     }
     if url_hash:
         data["url_hash"] = url_hash
-    # Se já existir um registro com o mesmo hash, não inserir outro
+    # Se já existir um registro com o mesmo hash, não inserir outro (a menos que seja uma cópia)
     transcription_id = None
     existing = None
     try:
-        if url_hash:
+        if url_hash and not allow_duplicate_insert:
             existing = _find_transcription_by_hash(url_hash)
             if existing:
                 transcription_id = existing["id"]
@@ -356,6 +357,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
         url_hash = f"content:{file_hash}" if file_hash else f"url:{_sha256_str(req.video_url)}"
 
         # Evita duplicação dentro da mesma réplica
+        is_copy_run = False
         lock = _get_lock_for(url_hash)
         with lock:
             existing = _find_transcription_by_hash(url_hash)
@@ -365,12 +367,9 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
                 if req.force:
                     print(f"[DEBUG] Force=true - ignorando dedupe. Existing id={existing.get('id')} status={status} stale={is_stale}")
                 elif status == "completed":
-                    print(f"[DEBUG] Dedup hit (completed). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
-                    return TranscriptionResponse(
-                        job_id=existing.get("job_id") or job_id,
-                        message="Transcrição já existente",
-                        status="done"
-                    )
+                    # Nova regra: processar normalmente e prefixar o nome como cópia
+                    is_copy_run = True
+                    print(f"[DEBUG] Dedup hit (completed). Proceeding with copy run for url_hash={url_hash}")
                 elif status == "processing" and not is_stale:
                     print(f"[DEBUG] Dedup hit (processing, not stale). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
                     return TranscriptionResponse(
@@ -401,6 +400,9 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
         text = final["data"].get("text", "")
         user_id = current_user.get('id') if current_user else None
         clean_filename = req.title or _clean_filename_from_url(req.video_url)
+        if is_copy_run:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            clean_filename = f"[copy-{ts}]" + clean_filename
         print(f"[DEBUG] URL transcription completed, text length: {len(text)} characters")
         print(f"[DEBUG] Current user: {current_user}")
         print(f"[DEBUG] User ID: {user_id}")
@@ -413,6 +415,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: Optional[
             clean_filename,
             user_id,
             url_hash=url_hash,
+            allow_duplicate_insert=is_copy_run,
         )
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
@@ -452,6 +455,7 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         url_hash = f"upload:{file_hash}"
 
         lock = _get_lock_for(url_hash)
+        is_copy_run = False
         with lock:
             existing = _find_transcription_by_hash(url_hash)
             if existing:
@@ -460,12 +464,9 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
                 if force:
                     print(f"[DEBUG] Force=true - ignorando dedupe. Existing id={existing.get('id')} status={status} stale={is_stale}")
                 elif status == "completed":
-                    print(f"[DEBUG] Dedup hit (completed). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
-                    return TranscriptionResponse(
-                        job_id=existing.get("job_id") or job_id,
-                        message="Transcrição já existente",
-                        status="done"
-                    )
+                    # Nova regra: processar normalmente e prefixar o nome como cópia
+                    is_copy_run = True
+                    print(f"[DEBUG] Dedup hit (completed). Proceeding with copy run for url_hash={url_hash}")
                 elif status == "processing" and not is_stale:
                     print(f"[DEBUG] Dedup hit (processing, not stale). Returning existing job {existing.get('job_id')} for url_hash={url_hash}")
                     return TranscriptionResponse(
@@ -498,7 +499,11 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         print(f"[DEBUG] Current user: {current_user}")
         print(f"[DEBUG] User ID: {user_id}")
         print(f"[DEBUG] Starting post-processing for job_id: {job_id}")
-        process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id, url_hash=url_hash)
+        save_name = file.filename
+        if is_copy_run:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            save_name = f"[copy-{ts}]" + save_name
+        process_and_save_transcription(text, job_id, "UPLOAD", save_name, user_id, url_hash=url_hash, allow_duplicate_insert=is_copy_run)
         print(f"[DEBUG] Post-processing completed successfully for job_id: {job_id}")
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
