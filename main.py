@@ -260,6 +260,10 @@ REGRAS IMPORTANTES:
                 transcription_id = existing["id"]
     except Exception:
         existing = None
+    if allow_duplicate_insert:
+        # Para cópias, não definimos url_hash para evitar violar a unique constraint
+        if "url_hash" in data:
+            data.pop("url_hash", None)
     if transcription_id is None:
         print(f"[DEBUG] Inserting transcription data into Supabase...")
         res = insert_transcription(data)
