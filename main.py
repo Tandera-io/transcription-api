@@ -18,7 +18,7 @@ from services.assembly_service import AssemblyAIService
 from services.download_service import DownloadService
 from services.supabase_service import insert_transcription, update_transcription
 from services.openai_service import gpt_4_completion
-from middleware.auth import get_current_user
+from middleware.auth import get_current_user, get_current_user_or_service
 
 
 class TranscriptionRequest(BaseModel):
@@ -236,7 +236,7 @@ def health():
 
 
 @app.post("/api/transcribe")
-async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user)):
+async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_or_service)):
     try:
         job_id = str(uuid.uuid4())
         download = DownloadService()
@@ -290,7 +290,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_or_service)):
     try:
         job_id = str(uuid.uuid4())
         temp_path = f"/tmp/{job_id}_{file.filename}"

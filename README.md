@@ -15,6 +15,7 @@ Autenticação: Supabase JWT via header `Authorization: Bearer <token>`.
 - SUPABASE_JWT_SECRET
 - ASSEMBLYAI_API_KEY
 - OPENAI_API_KEY
+- TRANSCRIPTION_SERVICE_API_KEY (para autenticação service-to-service)
 - CORS_ORIGINS (opcional)
 
 ## Deploy Railway
