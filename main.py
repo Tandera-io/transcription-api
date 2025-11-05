@@ -52,6 +52,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Adicionar middleware de tenant (DEPOIS do CORS para que OPTIONS seja processado primeiro)
+from middleware.tenant import TenantMiddleware
+app.add_middleware(TenantMiddleware)
+
 
 """Idempotência e cliente Supabase"""
 SUPABASE_URL = os.getenv("SUPABASE_URL")
