@@ -44,17 +44,19 @@ else:
         "*"
     ]
 
+# Adicionar middleware de tenant PRIMEIRO (será executado por último devido à ordem inversa do FastAPI)
+from middleware.tenant import TenantMiddleware
+app.add_middleware(TenantMiddleware)
+
+# Adicionar CORS por último (será executado primeiro, processando OPTIONS antes do tenant)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.(netlify\.app|liacrm\.io)$",  # permite deploy previews do Netlify e subdomínios liacrm.io
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Adicionar middleware de tenant (DEPOIS do CORS para que OPTIONS seja processado primeiro)
-from middleware.tenant import TenantMiddleware
-app.add_middleware(TenantMiddleware)
 
 
 """Idempotência e cliente Supabase"""
