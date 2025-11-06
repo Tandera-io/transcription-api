@@ -338,14 +338,17 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         
         print(f"[UPLOAD] Recebendo arquivo: {file.filename}, content_type: {file.content_type}")
         
-        # Ler arquivo em chunks para evitar problemas de memória
-        file_bytes = await file.read()
-        file_size = len(file_bytes)
-        print(f"[UPLOAD] Arquivo lido: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
-        
-        with open(temp_path, "wb") as f:
-            f.write(file_bytes)
-        print(f"[UPLOAD] Arquivo salvo em: {temp_path}")
+        # Salvar arquivo em chunks para evitar problemas de memória com arquivos grandes
+        try:
+            file_size = 0
+            with open(temp_path, "wb") as f:
+                while chunk := await file.read(8192):  # Ler em chunks de 8KB
+                    f.write(chunk)
+                    file_size += len(chunk)
+            print(f"[UPLOAD] Arquivo salvo: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB) em {temp_path}")
+        except Exception as e:
+            print(f"[UPLOAD] Erro ao salvar arquivo: {e}")
+            raise HTTPException(500, f"Erro ao salvar arquivo: {str(e)}")
 
         download = DownloadService()
         audio_path = temp_path
