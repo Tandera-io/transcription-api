@@ -60,45 +60,83 @@ class DownloadService:
     
     def _extract_audio_from_video(self, video_path: str, output_path: str) -> Dict[str, Any]:
         try:
+            # Procurar FFmpeg nos caminhos comuns (incluindo Nix)
             possible_paths = [
-                'ffmpeg', '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg',
-                '/app/.apt/usr/bin/ffmpeg', '/usr/bin/ffmpeg-static'
+                'ffmpeg',  # PATH padrão
+                '/usr/bin/ffmpeg',
+                '/usr/local/bin/ffmpeg',
+                '/opt/homebrew/bin/ffmpeg',
+                '/nix/store/*/bin/ffmpeg',  # Nixpacks no Railway
             ]
+            
             ffmpeg_path = None
-            for path in possible_paths:
-                try:
-                    result = subprocess.run([path, '-version'], capture_output=True, check=True, timeout=10)
-                    ffmpeg_path = path
-                    logger.info(f"FFmpeg encontrado em: {path}")
-                    break
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    continue
+            
+            # Tentar encontrar via 'which' primeiro (mais confiável)
+            try:
+                which_result = subprocess.run(['which', 'ffmpeg'], capture_output=True, text=True, timeout=5)
+                if which_result.returncode == 0:
+                    ffmpeg_path = which_result.stdout.strip()
+                    logger.info(f"FFmpeg encontrado via 'which': {ffmpeg_path}")
+            except Exception:
+                pass
+            
+            # Se não encontrou via 'which', tentar caminhos específicos
             if not ffmpeg_path:
-                logger.info("FFmpeg não encontrado, tentando instalar...")
-                try:
-                    for cmd in [['apt-get', 'update'], ['apt-get', 'install', '-y', 'ffmpeg']]:
-                        subprocess.run(cmd, capture_output=True, check=True, timeout=60)
-                    subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True, timeout=10)
-                    ffmpeg_path = 'ffmpeg'
-                    logger.info("FFmpeg instalado com sucesso via apt-get")
-                except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-                    pass
+                for path in possible_paths:
+                    try:
+                        # Expandir glob para Nix
+                        if '*' in path:
+                            import glob
+                            matches = glob.glob(path)
+                            if matches:
+                                path = matches[0]
+                        
+                        result = subprocess.run([path, '-version'], capture_output=True, check=True, timeout=5)
+                        ffmpeg_path = path
+                        logger.info(f"FFmpeg encontrado em: {path}")
+                        break
+                    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+                        continue
+            
             if not ffmpeg_path:
-                return {"success": False, "error": "FFmpeg não está instalado ou não está disponível no PATH"}
+                error_msg = "FFmpeg não está instalado. Certifique-se de que o FFmpeg está incluído nas dependências do sistema (nixpacks.toml ou Aptfile)."
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            
             logger.info(f"[DEBUG] Iniciando extração de áudio de vídeo: {video_path} -> {output_path}")
-            cmd = [ffmpeg_path, '-i', video_path, '-vn', '-acodec', 'libmp3lame', '-ab', '192k', '-ar', '44100', '-y', output_path]
+            logger.info(f"[DEBUG] Usando FFmpeg: {ffmpeg_path}")
+            
+            # Comando FFmpeg otimizado para extração rápida
+            cmd = [
+                ffmpeg_path, '-i', video_path,
+                '-vn',  # Sem vídeo
+                '-acodec', 'libmp3lame',  # Codec MP3
+                '-ab', '192k',  # Bitrate
+                '-ar', '44100',  # Sample rate
+                '-y',  # Sobrescrever
+                output_path
+            ]
+            
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
             if result.returncode == 0:
                 logger.info("Extração de áudio concluída com sucesso")
                 return {"success": True, "audio_path": output_path}
             else:
-                error_msg = f"Erro no ffmpeg: {result.stderr}"
+                error_msg = f"Erro no ffmpeg (código {result.returncode}): {result.stderr}"
                 logger.error(error_msg)
                 return {"success": False, "error": error_msg}
+                
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Timeout durante extração de áudio"}
+            error_msg = "Timeout durante extração de áudio (>5min). O arquivo pode ser muito grande."
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
         except Exception as e:
-            return {"success": False, "error": f"Erro inesperado durante extração de áudio: {str(e)}"}
+            error_msg = f"Erro inesperado durante extração de áudio: {str(e)}"
+            logger.error(error_msg)
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": error_msg}
     
     def download_file(self, url: str, job_id: str) -> Dict[str, Any]:
         try:
