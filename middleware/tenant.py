@@ -129,10 +129,13 @@ class TenantMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             return response
         
+        logger.info(f"[TenantMiddleware] Processando {request.method} {request.url.path}")
         tenant_slug = None
         
         # 1. Tentar via header (prioritário)
         tenant_slug = request.headers.get("X-Tenant-Slug")
+        if tenant_slug:
+            logger.info(f"[TenantMiddleware] Tenant detectado via header: {tenant_slug}")
         
         # 2. Tentar via subdomain do FRONTEND (Origin ou Referer)
         if not tenant_slug:
@@ -189,9 +192,15 @@ class TenantMiddleware(BaseHTTPMiddleware):
             # Continuar com credenciais padrão
             _tenant_context.set_tenant(tenant_slug, {})
         
-        # Processar requisição
-        response = await call_next(request)
-        return response
+        # Processar requisição com tratamento de erro
+        try:
+            response = await call_next(request)
+            return response
+        except Exception as e:
+            logger.error(f"[TenantMiddleware] Erro ao processar requisição: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
 
 # Manter função legada para compatibilidade
