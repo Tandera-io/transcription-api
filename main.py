@@ -18,7 +18,7 @@ from services.assembly_service import AssemblyAIService
 from services.download_service import DownloadService
 from services.supabase_service import insert_transcription, update_transcription
 from services.openai_service import gpt_4_completion
-from middleware.auth import get_current_user, get_current_user_or_service
+from middleware.auth import get_current_user, get_current_user_or_service, get_current_user_optional
 
 
 class TranscriptionRequest(BaseModel):
@@ -331,14 +331,20 @@ def _process_upload_transcription(audio_path: str, job_id: str, filename: str, u
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_or_service)):
+async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_optional)):
     try:
         job_id = str(uuid.uuid4())
         temp_path = f"/tmp/{job_id}_{file.filename}"
         
-        print(f"[UPLOAD] Recebendo arquivo: {file.filename}")
+        print(f"[UPLOAD] Recebendo arquivo: {file.filename}, content_type: {file.content_type}")
+        
+        # Ler arquivo em chunks para evitar problemas de memória
+        file_bytes = await file.read()
+        file_size = len(file_bytes)
+        print(f"[UPLOAD] Arquivo lido: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+        
         with open(temp_path, "wb") as f:
-            f.write(await file.read())
+            f.write(file_bytes)
         print(f"[UPLOAD] Arquivo salvo em: {temp_path}")
 
         download = DownloadService()
