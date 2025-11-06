@@ -293,19 +293,58 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
         raise HTTPException(500, str(e))
 
 
+def _process_upload_transcription(audio_path: str, job_id: str, filename: str, user_id: Optional[str], url_hash: str):
+    """Processa transcrição em background para evitar timeout"""
+    try:
+        print(f"[BACKGROUND] Iniciando processamento de {filename}")
+        download = DownloadService()
+        assembly = AssemblyAIService()
+        
+        # Upload para AssemblyAI
+        upload = assembly.upload_file(audio_path)
+        if not upload.get("success"):
+            print(f"[BACKGROUND] Erro no upload: {upload.get('error')}")
+            return
+        
+        # Iniciar transcrição
+        trans = assembly.start_transcription(upload.get("upload_url"))
+        if not trans.get("success"):
+            print(f"[BACKGROUND] Erro ao iniciar transcrição: {trans.get('error')}")
+            return
+        
+        # Aguardar conclusão
+        final = assembly.wait_for_completion(trans.get("transcript_id"))
+        if not final.get("success"):
+            print(f"[BACKGROUND] Erro na transcrição: {final.get('error')}")
+            return
+        
+        # Salvar no Supabase
+        text = final["data"].get("text", "")
+        process_and_save_transcription(text, job_id, "UPLOAD", filename, user_id, url_hash=url_hash)
+        print(f"[BACKGROUND] Transcrição concluída e salva: {job_id}")
+    except Exception as e:
+        print(f"[BACKGROUND] Erro no processamento: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 @app.post("/api/transcribe/upload")
 async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_or_service)):
     try:
         job_id = str(uuid.uuid4())
         temp_path = f"/tmp/{job_id}_{file.filename}"
+        
+        print(f"[UPLOAD] Recebendo arquivo: {file.filename}")
         with open(temp_path, "wb") as f:
             f.write(await file.read())
+        print(f"[UPLOAD] Arquivo salvo em: {temp_path}")
 
         download = DownloadService()
-        assembly = AssemblyAIService()
-
         audio_path = temp_path
+        
+        # Extrair áudio se for vídeo
         if file.content_type and file.content_type.startswith("video/"):
+            print(f"[UPLOAD] Extraindo áudio de vídeo")
             audio_path = temp_path + ".audio.mp3"
             extraction = download._extract_audio_from_video(temp_path, audio_path)
             if not extraction["success"]:
@@ -319,30 +358,47 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
         with lock:
             existing = _find_transcription_by_hash(url_hash)
             if existing and existing.get("status") in ("processing", "completed"):
+                print(f"[UPLOAD] Transcrição já existe: {existing.get('job_id')}")
                 return TranscriptionResponse(
                     job_id=existing.get("job_id") or job_id,
                     message="Transcrição já existente",
-                    status=existing.get("status") or "done"
+                    status=existing.get("status") or "processing"
                 )
 
-        upload = assembly.upload_file(audio_path)
-        if not upload.get("success"):
-            raise HTTPException(500, f"Erro no upload: {upload.get('error')}")
-        trans = assembly.start_transcription(upload.get("upload_url"))
-        if not trans.get("success"):
-            raise HTTPException(500, f"Erro ao iniciar transcrição: {trans.get('error')}")
-        final = assembly.wait_for_completion(trans.get("transcript_id"))
-        if not final.get("success"):
-            raise HTTPException(500, f"Erro na transcrição: {final.get('error')}")
-
-        text = final["data"].get("text", "")
+        # Criar registro inicial no Supabase
         user_id = current_user.get('id') if current_user else None
-        process_and_save_transcription(text, job_id, "UPLOAD", file.filename, user_id, url_hash=url_hash)
-
-        return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
+        try:
+            initial_data = {
+                "job_id": job_id,
+                "video_url": "UPLOAD",
+                "reuniao": file.filename,
+                "status": "processing",
+                "url_hash": url_hash,
+            }
+            if user_id:
+                initial_data["user_id"] = user_id
+            
+            insert_transcription(initial_data)
+            print(f"[UPLOAD] Registro inicial criado no Supabase: {job_id}")
+        except Exception as e:
+            print(f"[UPLOAD] Erro ao criar registro inicial: {e}")
+            # Continuar mesmo se falhar
+        
+        # Processar em background para não bloquear a resposta HTTP
+        background_tasks.add_task(_process_upload_transcription, audio_path, job_id, file.filename, user_id, url_hash)
+        
+        print(f"[UPLOAD] Transcrição agendada em background: {job_id}")
+        return TranscriptionResponse(
+            job_id=job_id, 
+            message="Transcrição iniciada em background", 
+            status="processing"
+        )
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[UPLOAD] Erro: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, str(e))
 
 
