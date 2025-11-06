@@ -69,6 +69,11 @@ async def get_tenant_from_registry(slug: str) -> Optional[dict]:
     # Configurações do Registry
     registry_url = os.getenv("REGISTRY_API_URL", "http://localhost:3000")
     
+    # Validar que a URL tem protocolo
+    if registry_url and not registry_url.startswith(("http://", "https://")):
+        logger.error(f"REGISTRY_API_URL inválida (sem protocolo): {registry_url}")
+        return None
+    
     # Buscar no Registry
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -129,11 +134,34 @@ class TenantMiddleware(BaseHTTPMiddleware):
         # 1. Tentar via header (prioritário)
         tenant_slug = request.headers.get("X-Tenant-Slug")
         
-        # 2. Tentar via subdomain
+        # 2. Tentar via subdomain do FRONTEND (Origin ou Referer)
         if not tenant_slug:
-            host = request.headers.get("host", "")
-            if "." in host and not host.startswith("localhost"):
-                tenant_slug = host.split(".")[0]
+            # Tentar extrair do Origin (CORS requests)
+            origin = request.headers.get("origin", "")
+            if origin:
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(origin)
+                    host = parsed.netloc or parsed.hostname or ""
+                    if "." in host and not host.startswith("localhost"):
+                        tenant_slug = host.split(".")[0]
+                        logger.debug(f"Tenant detectado via Origin: {tenant_slug}")
+                except Exception as e:
+                    logger.debug(f"Erro ao extrair tenant do Origin: {e}")
+            
+            # Fallback: tentar Referer
+            if not tenant_slug:
+                referer = request.headers.get("referer", "")
+                if referer:
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(referer)
+                        host = parsed.netloc or parsed.hostname or ""
+                        if "." in host and not host.startswith("localhost"):
+                            tenant_slug = host.split(".")[0]
+                            logger.debug(f"Tenant detectado via Referer: {tenant_slug}")
+                    except Exception as e:
+                        logger.debug(f"Erro ao extrair tenant do Referer: {e}")
         
         # 3. Tentar via query param
         if not tenant_slug:
