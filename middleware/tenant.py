@@ -159,7 +159,6 @@ def clear_tenant_cache(slug: Optional[str] = None):
     global _tenant_cache
     if slug:
         _tenant_cache.pop(slug, None)
-        _tenant_cache.pop(f"{slug}:backend", None)
         logger.info(f"Cache do tenant '{slug}' limpo")
     else:
         _tenant_cache.clear()
@@ -230,10 +229,9 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 tenant_slug = os.getenv("DEFAULT_TENANT_SLUG", "dev")
                 logger.debug(f"Nenhum tenant especificado, usando '{tenant_slug}'")
             
-            # Buscar dados do tenant no Registry (sem serviceRole no middleware)
-            # O serviceRole será obtido sob demanda pelo supabase_service quando necessário
+            # Buscar dados do tenant no Registry
             try:
-                tenant_data = await get_tenant_from_registry(tenant_slug, include_backend_credentials=False)
+                tenant_data = await get_tenant_from_registry(tenant_slug)
                 
                 if not tenant_data:
                     # Se não encontrou no Registry, deixar passar para usar .env (fallback)

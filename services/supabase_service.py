@@ -26,7 +26,7 @@ def get_supabase_client() -> Client:
             key = tenant_ctx.get_anon_key()
             
             if url and key:
-                logger.info(f"[Supabase] Usando credenciais do tenant: {tenant_ctx.tenant_slug}")
+                logger.info(f"[Supabase] Usando credenciais do tenant: {tenant_ctx.tenant_slug} | URL: {url[:50]}...")
                 parsed = urlparse(url)
                 if parsed.scheme and parsed.netloc:
                     return create_client(url, key)
