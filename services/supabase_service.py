@@ -62,6 +62,88 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 
+def get_supabase_service_client() -> Client:
+    """
+    Cria cliente Supabase com SERVICE_ROLE (bypass RLS).
+    
+    Necessário para operações administrativas e bypass de RLS.
+    Busca serviceRole do Registry API com autenticação.
+    """
+    # Tentar obter service_key do contexto do tenant (multi-tenancy)
+    try:
+        from middleware.tenant import get_tenant_context, get_tenant_from_registry
+        import concurrent.futures
+        import asyncio
+        
+        tenant_ctx = get_tenant_context()
+        
+        if tenant_ctx.tenant_slug:
+            # Verificar se já tem serviceRole no contexto
+            service_key = tenant_ctx.get_service_key()
+            
+            if not service_key:
+                # Buscar credenciais completas do Registry (com serviceRole)
+                logger.info(f"[Supabase] Buscando serviceRole do Registry para tenant: {tenant_ctx.tenant_slug}")
+                
+                # Como estamos em contexto síncrono, precisamos cuidado com asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Se já estamos em um loop, usar thread executor
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(
+                                asyncio.run,
+                                get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
+                            )
+                            tenant_data = future.result(timeout=10)
+                    else:
+                        # Se não está em loop, pode usar asyncio.run
+                        tenant_data = asyncio.run(
+                            get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
+                        )
+                except RuntimeError:
+                    # Fallback se houver problema com event loop
+                    tenant_data = asyncio.run(
+                        get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
+                    )
+                
+                if tenant_data and tenant_data.get("serviceRole"):
+                    service_key = tenant_data["serviceRole"]
+                    # Atualizar contexto com dados completos
+                    tenant_ctx.set_tenant(tenant_ctx.tenant_slug, tenant_data)
+                    logger.info(f"[Supabase] serviceRole obtido do Registry para tenant: {tenant_ctx.tenant_slug}")
+                else:
+                    logger.warning(f"[Supabase] Não foi possível obter serviceRole do Registry para tenant: {tenant_ctx.tenant_slug}")
+            
+            # Se temos service_key e URL, usar
+            if service_key:
+                url = tenant_ctx.get_supabase_url()
+                if url:
+                    logger.info(f"[Supabase] Usando SERVICE_ROLE do tenant: {tenant_ctx.tenant_slug}")
+                    parsed = urlparse(url)
+                    if parsed.scheme and parsed.netloc:
+                        return create_client(url, service_key)
+                    else:
+                        logger.warning(f"[Supabase] URL do tenant inválida: {url}, usando fallback")
+    
+    except Exception as e:
+        logger.warning(f"[Supabase] Erro ao obter SERVICE_ROLE do tenant, usando fallback: {e}")
+    
+    # Fallback para credenciais padrão do .env
+    url = _clean_env_value(os.getenv("SUPABASE_URL") or "")
+    service_key = _clean_env_value(os.getenv("SUPABASE_SERVICE_KEY") or "")
+    
+    if not url or not service_key:
+        raise ValueError("SUPABASE_URL e SUPABASE_SERVICE_KEY devem estar configurados no .env")
+    
+    logger.info("[Supabase] Usando SERVICE_ROLE do .env (fallback)")
+    return create_client(url, service_key)
+
+
+# Alias para compatibilidade
+get_supabase_admin = get_supabase_service_client
+
+
 def insert_transcription(data):
     """Insere uma nova transcrição no Supabase"""
     supabase = get_supabase_client()
