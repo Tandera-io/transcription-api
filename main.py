@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -133,8 +133,17 @@ def _extract_json_from_text(text: str) -> dict:
     return {}
 
 
-def process_and_save_transcription(transcription_text: str, job_id: str, video_url: str, file_name: str,
-                                   user_id: Optional[str] = None, url_hash: Optional[str] = None):
+def process_and_save_transcription(
+    transcription_text: str, 
+    job_id: str, 
+    video_url: str, 
+    file_name: str,
+    user_id: Optional[str] = None, 
+    url_hash: Optional[str] = None,
+    meeting_type: Optional[str] = None,
+    include_nlp: bool = True,
+    speaker_labels: bool = True
+):
     # Prompt detalhado (igual ao backend principal)
     prompt = f"""
 Analise a seguinte transcrição de reunião de forma MUITO DETALHADA e retorne APENAS um JSON válido em português brasileiro.
@@ -188,6 +197,11 @@ REGRAS IMPORTANTES:
     main_points = parsed.get('main_points') if isinstance(parsed.get('main_points'), list) else []
     action_items = parsed.get('action_items') if isinstance(parsed.get('action_items'), list) else []
     tags = parsed.get('tag') if isinstance(parsed.get('tag'), list) else []
+    participants = parsed.get('participants') if isinstance(parsed.get('participants'), list) else []
+    metrics = parsed.get('metrics') if isinstance(parsed.get('metrics'), list) else []
+    dates = parsed.get('dates') if isinstance(parsed.get('dates'), list) else []
+    risks = parsed.get('risks') if isinstance(parsed.get('risks'), list) else []
+    next_steps = parsed.get('next_steps') if isinstance(parsed.get('next_steps'), list) else []
 
     data = {
         "job_id": job_id,
@@ -195,30 +209,54 @@ REGRAS IMPORTANTES:
         "transcription": transcription_text,
         "status": "processing",
         "created_at": datetime.utcnow().isoformat(),
+        "datetime": datetime.utcnow().date().isoformat(),
         "title": title,
         "reuniao": file_name,
         "user_id": user_id,
+        "meeting_type": meeting_type or "projeto",
     }
     if url_hash:
         data["url_hash"] = url_hash
 
-    # Se já existir um registro com o mesmo hash, não inserir outro
+    # Buscar registro existente por job_id ou url_hash
     transcription_id = None
     existing = None
     try:
-        if url_hash:
+        # Primeiro tentar por job_id
+        if job_id and _supabase_client:
+            res = (
+                _supabase_client
+                .table("transcriptions")
+                .select("id, job_id, status")
+                .eq("job_id", job_id)
+                .limit(1)
+                .execute()
+            )
+            data_result = getattr(res, "data", None)
+            if data_result and len(data_result) > 0:
+                existing = data_result[0]
+                transcription_id = existing["id"]
+        
+        # Se não encontrou, tentar por url_hash
+        if transcription_id is None and url_hash:
             existing = _find_transcription_by_hash(url_hash)
             if existing:
                 transcription_id = existing["id"]
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Erro ao buscar registro existente: {e}")
         existing = None
 
     if transcription_id is None:
         res = insert_transcription(data)
         transcription_id = res.data[0]['id']
+        print(f"[DEBUG] Novo registro criado com ID: {transcription_id}")
+    else:
+        print(f"[DEBUG] Usando registro existente com ID: {transcription_id}")
 
+    print(f"[DEBUG] Preparando atualização para transcription_id: {transcription_id}")
     update_data = {
         "status": "completed",
+        "transcription": transcription_text,
         "executive_summary": executive_summary,
         "decisions": json.dumps(decisions),
         "main_points": json.dumps(main_points),
@@ -229,8 +267,20 @@ REGRAS IMPORTANTES:
         "rito": rito,
         "title": title,
         "reuniao": file_name,
+        "participants": json.dumps(participants),
+        "metrics": json.dumps(metrics),
+        "dates": json.dumps(dates),
+        "risks": json.dumps(risks),
+        "next_steps": json.dumps(next_steps),
+        "updated_at": datetime.utcnow().isoformat(),
+        "meeting_type": meeting_type or "projeto",
+        # Nota: include_nlp e speaker_labels não são salvos na tabela (apenas usados durante processamento)
     }
-    update_transcription(transcription_id, update_data)
+    
+    print(f"[DEBUG] Atualizando transcrição {transcription_id} com status: {update_data['status']}")
+    result = update_transcription(transcription_id, update_data)
+    print(f"[DEBUG] Atualização concluída: {result}")
+    print(f"[DEBUG] ✅ Transcrição {transcription_id} salva com sucesso no Supabase")
 
 
 @app.get("/api/health")
@@ -286,6 +336,7 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
             req.title or os.path.basename(req.video_url),
             user_id,
             url_hash=url_hash,
+            meeting_type=req.meeting_type,
         )
 
         return TranscriptionResponse(job_id=job_id, message="Transcrição concluída e salva no Supabase", status="done")
@@ -295,10 +346,20 @@ async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = De
         raise HTTPException(500, str(e))
 
 
-def _process_upload_transcription(audio_path: str, job_id: str, filename: str, user_id: Optional[str], url_hash: str):
+def _process_upload_transcription(
+    audio_path: str, 
+    job_id: str, 
+    filename: str, 
+    user_id: Optional[str], 
+    url_hash: str, 
+    meeting_type: Optional[str] = None,
+    include_nlp: bool = True,
+    speaker_labels: bool = True
+):
     """Processa transcrição em background para evitar timeout"""
     try:
         print(f"[BACKGROUND] Iniciando processamento de {filename}")
+        print(f"[BACKGROUND] Configurações: include_nlp={include_nlp}, speaker_labels={speaker_labels}")
         download = DownloadService()
         assembly = AssemblyAIService()
         
@@ -308,8 +369,17 @@ def _process_upload_transcription(audio_path: str, job_id: str, filename: str, u
             print(f"[BACKGROUND] Erro no upload: {upload.get('error')}")
             return
         
-        # Iniciar transcrição
-        trans = assembly.start_transcription(upload.get("upload_url"))
+        # ✅ Criar configuração para transcrição
+        from services.assembly_service import TranscriptionConfig
+        config = TranscriptionConfig(
+            language_code="pt",
+            speaker_labels=speaker_labels,
+            auto_punctuation=True,
+            format_text=True
+        )
+        
+        # Iniciar transcrição com configuração
+        trans = assembly.start_transcription(upload.get("upload_url"), config=config)
         if not trans.get("success"):
             print(f"[BACKGROUND] Erro ao iniciar transcrição: {trans.get('error')}")
             return
@@ -322,7 +392,17 @@ def _process_upload_transcription(audio_path: str, job_id: str, filename: str, u
         
         # Salvar no Supabase
         text = final["data"].get("text", "")
-        process_and_save_transcription(text, job_id, "UPLOAD", filename, user_id, url_hash=url_hash)
+        process_and_save_transcription(
+            text, 
+            job_id, 
+            "UPLOAD", 
+            filename, 
+            user_id, 
+            url_hash=url_hash, 
+            meeting_type=meeting_type,
+            include_nlp=include_nlp,
+            speaker_labels=speaker_labels
+        )
         print(f"[BACKGROUND] Transcrição concluída e salva: {job_id}")
     except Exception as e:
         print(f"[BACKGROUND] Erro no processamento: {e}")
@@ -331,7 +411,15 @@ def _process_upload_transcription(audio_path: str, job_id: str, filename: str, u
 
 
 @app.post("/api/transcribe/upload")
-async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user_optional)):
+async def transcribe_upload(
+    background_tasks: BackgroundTasks, 
+    file: UploadFile = File(...), 
+    meeting_type: Optional[str] = Form(None),
+    force: Optional[bool] = Form(False),  # ✅ Permitir reprocessamento
+    include_nlp: Optional[bool] = Form(True),
+    speaker_labels: Optional[bool] = Form(True),
+    current_user: dict = Depends(get_current_user_optional)
+):
     try:
         job_id = str(uuid.uuid4())
         temp_path = f"/tmp/{job_id}_{file.filename}"
@@ -367,36 +455,55 @@ async def transcribe_upload(background_tasks: BackgroundTasks, file: UploadFile 
 
         lock = _get_lock_for(url_hash)
         with lock:
-            existing = _find_transcription_by_hash(url_hash)
-            if existing and existing.get("status") in ("processing", "completed"):
-                print(f"[UPLOAD] Transcrição já existe: {existing.get('job_id')}")
-                return TranscriptionResponse(
-                    job_id=existing.get("job_id") or job_id,
-                    message="Transcrição já existente",
-                    status=existing.get("status") or "processing"
-                )
+            # ✅ Verificar duplicação apenas se force=False
+            if not force:
+                existing = _find_transcription_by_hash(url_hash)
+                if existing and existing.get("status") in ("processing", "completed"):
+                    print(f"[UPLOAD] Transcrição já existe: {existing.get('job_id')}")
+                    return TranscriptionResponse(
+                        job_id=existing.get("job_id") or job_id,
+                        message="Transcrição já existente",
+                        status=existing.get("status") or "processing"
+                    )
+            else:
+                print(f"[UPLOAD] Modo force ativado - ignorando verificação de duplicação para arquivo: {file.filename}")
 
-        # Criar registro inicial no Supabase
+        # Criar registro inicial no Supabase (verificando duplicata)
         user_id = current_user.get('id') if current_user else None
         try:
-            initial_data = {
-                "job_id": job_id,
-                "video_url": "UPLOAD",
-                "reuniao": file.filename,
-                "status": "processing",
-                "url_hash": url_hash,
-            }
-            if user_id:
-                initial_data["user_id"] = user_id
-            
-            insert_transcription(initial_data)
-            print(f"[UPLOAD] Registro inicial criado no Supabase: {job_id}")
+            # Verificar se já existe um registro com este hash
+            existing = _find_transcription_by_hash(url_hash)
+            if existing:
+                print(f"[UPLOAD] Registro já existe no Supabase: {existing['job_id']}")
+            else:
+                initial_data = {
+                    "job_id": job_id,
+                    "video_url": "UPLOAD",
+                    "reuniao": file.filename,
+                    "status": "processing",
+                    "url_hash": url_hash,
+                }
+                if user_id:
+                    initial_data["user_id"] = user_id
+                
+                insert_transcription(initial_data)
+                print(f"[UPLOAD] Registro inicial criado no Supabase: {job_id}")
         except Exception as e:
             print(f"[UPLOAD] Erro ao criar registro inicial: {e}")
             # Continuar mesmo se falhar
         
         # Processar em background para não bloquear a resposta HTTP
-        background_tasks.add_task(_process_upload_transcription, audio_path, job_id, file.filename, user_id, url_hash)
+        background_tasks.add_task(
+            _process_upload_transcription, 
+            audio_path, 
+            job_id, 
+            file.filename, 
+            user_id, 
+            url_hash, 
+            meeting_type,
+            include_nlp,
+            speaker_labels
+        )
         
         print(f"[UPLOAD] Transcrição agendada em background: {job_id}")
         return TranscriptionResponse(

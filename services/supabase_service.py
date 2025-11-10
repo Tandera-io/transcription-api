@@ -158,9 +158,18 @@ def insert_transcription(data):
 
 def update_transcription(transcription_id, data):
     """Atualiza uma transcrição existente"""
-    supabase = get_supabase_client()
-    result = supabase.table("transcriptions").update(data).eq("id", transcription_id).execute()
-    return result
+    try:
+        supabase = get_supabase_client()
+        print(f"[SUPABASE] Atualizando transcription_id={transcription_id}")
+        print(f"[SUPABASE] Campos a atualizar: {list(data.keys())}")
+        result = supabase.table("transcriptions").update(data).eq("id", transcription_id).execute()
+        print(f"[SUPABASE] Atualização bem-sucedida: {len(result.data)} registro(s) atualizado(s)")
+        return result
+    except Exception as e:
+        print(f"[SUPABASE] ❌ Erro ao atualizar transcrição {transcription_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def get_transcription(transcription_id):
