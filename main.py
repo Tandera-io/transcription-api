@@ -87,11 +87,14 @@ def _sha256_str(value: str) -> str:
 
 
 def _find_transcription_by_hash(url_hash: str) -> Optional[Dict[str, Any]]:
-    if not _supabase_client or not url_hash:
+    """Busca transcrição por hash usando SERVICE_ROLE para bypass RLS"""
+    if not url_hash:
         return None
     try:
+        from services.supabase_service import get_supabase_service_client
+        supabase = get_supabase_service_client()
         res = (
-            _supabase_client
+            supabase
             .table("transcriptions")
             .select("id, job_id, status")
             .eq("url_hash", url_hash)
@@ -102,7 +105,8 @@ def _find_transcription_by_hash(url_hash: str) -> Optional[Dict[str, Any]]:
         data = getattr(res, "data", None)
         if data and len(data) > 0:
             return data[0]
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Erro ao buscar transcrição por hash: {e}")
         return None
     return None
 
@@ -222,10 +226,13 @@ REGRAS IMPORTANTES:
     transcription_id = None
     existing = None
     try:
+        from services.supabase_service import get_supabase_service_client
+        supabase = get_supabase_service_client()
+        
         # Primeiro tentar por job_id
-        if job_id and _supabase_client:
+        if job_id:
             res = (
-                _supabase_client
+                supabase
                 .table("transcriptions")
                 .select("id, job_id, status")
                 .eq("job_id", job_id)

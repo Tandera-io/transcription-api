@@ -67,55 +67,18 @@ def get_supabase_service_client() -> Client:
     Cria cliente Supabase com SERVICE_ROLE (bypass RLS).
     
     Necessário para operações administrativas e bypass de RLS.
-    Busca serviceRole do Registry API com autenticação.
+    O middleware deve ter buscado serviceRole do Registry previamente.
     """
     # Tentar obter service_key do contexto do tenant (multi-tenancy)
     try:
-        from middleware.tenant import get_tenant_context, get_tenant_from_registry
-        import concurrent.futures
-        import asyncio
+        from middleware.tenant import get_tenant_context
         
         tenant_ctx = get_tenant_context()
         
-        if tenant_ctx.tenant_slug:
-            # Verificar se já tem serviceRole no contexto
+        if tenant_ctx.tenant_slug and tenant_ctx.tenant_data:
+            # Verificar se tem serviceRole no contexto
             service_key = tenant_ctx.get_service_key()
             
-            if not service_key:
-                # Buscar credenciais completas do Registry (com serviceRole)
-                logger.info(f"[Supabase] Buscando serviceRole do Registry para tenant: {tenant_ctx.tenant_slug}")
-                
-                # Como estamos em contexto síncrono, precisamos cuidado com asyncio
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        # Se já estamos em um loop, usar thread executor
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(
-                                asyncio.run,
-                                get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
-                            )
-                            tenant_data = future.result(timeout=10)
-                    else:
-                        # Se não está em loop, pode usar asyncio.run
-                        tenant_data = asyncio.run(
-                            get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
-                        )
-                except RuntimeError:
-                    # Fallback se houver problema com event loop
-                    tenant_data = asyncio.run(
-                        get_tenant_from_registry(tenant_ctx.tenant_slug, include_backend_credentials=True)
-                    )
-                
-                if tenant_data and tenant_data.get("serviceRole"):
-                    service_key = tenant_data["serviceRole"]
-                    # Atualizar contexto com dados completos
-                    tenant_ctx.set_tenant(tenant_ctx.tenant_slug, tenant_data)
-                    logger.info(f"[Supabase] serviceRole obtido do Registry para tenant: {tenant_ctx.tenant_slug}")
-                else:
-                    logger.warning(f"[Supabase] Não foi possível obter serviceRole do Registry para tenant: {tenant_ctx.tenant_slug}")
-            
-            # Se temos service_key e URL, usar
             if service_key:
                 url = tenant_ctx.get_supabase_url()
                 if url:
@@ -125,6 +88,8 @@ def get_supabase_service_client() -> Client:
                         return create_client(url, service_key)
                     else:
                         logger.warning(f"[Supabase] URL do tenant inválida: {url}, usando fallback")
+            else:
+                logger.warning(f"[Supabase] serviceRole não disponível para tenant: {tenant_ctx.tenant_slug}, usando fallback")
     
     except Exception as e:
         logger.warning(f"[Supabase] Erro ao obter SERVICE_ROLE do tenant, usando fallback: {e}")
@@ -145,8 +110,11 @@ get_supabase_admin = get_supabase_service_client
 
 
 def insert_transcription(data):
-    """Insere uma nova transcrição no Supabase"""
-    supabase = get_supabase_client()
+    """Insere uma nova transcrição no Supabase
+    
+    Usa SERVICE_ROLE para bypass RLS, pois é uma operação de sistema.
+    """
+    supabase = get_supabase_service_client()
     
     # Se não tiver user_id, deixar como None (NULL no banco)
     if 'user_id' not in data:
@@ -157,9 +125,12 @@ def insert_transcription(data):
 
 
 def update_transcription(transcription_id, data):
-    """Atualiza uma transcrição existente"""
+    """Atualiza uma transcrição existente
+    
+    Usa SERVICE_ROLE para bypass RLS, pois é uma operação de sistema.
+    """
     try:
-        supabase = get_supabase_client()
+        supabase = get_supabase_service_client()
         print(f"[SUPABASE] Atualizando transcription_id={transcription_id}")
         print(f"[SUPABASE] Campos a atualizar: {list(data.keys())}")
         result = supabase.table("transcriptions").update(data).eq("id", transcription_id).execute()

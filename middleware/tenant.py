@@ -229,9 +229,20 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 tenant_slug = os.getenv("DEFAULT_TENANT_SLUG", "dev")
                 logger.debug(f"Nenhum tenant especificado, usando '{tenant_slug}'")
             
+            # Determinar se precisa de credenciais de backend (serviceRole)
+            # Endpoints que fazem INSERT/UPDATE no Supabase precisam de serviceRole
+            needs_backend_creds = any([
+                request.url.path.startswith("/upload"),
+                request.url.path.startswith("/transcribe"),
+                request.url.path.startswith("/process"),
+            ])
+            
             # Buscar dados do tenant no Registry
             try:
-                tenant_data = await get_tenant_from_registry(tenant_slug)
+                tenant_data = await get_tenant_from_registry(
+                    tenant_slug, 
+                    include_backend_credentials=needs_backend_creds
+                )
                 
                 if not tenant_data:
                     # Se não encontrou no Registry, deixar passar para usar .env (fallback)
@@ -242,7 +253,8 @@ class TenantMiddleware(BaseHTTPMiddleware):
                     new_context.set_tenant(tenant_slug, tenant_data)
                     # Log detalhado para debug
                     supabase_url = tenant_data.get("supabaseUrl", "N/A")
-                    logger.info(f"[TenantMiddleware] Tenant configurado: {tenant_slug} | Supabase: {supabase_url[:50]}...")
+                    has_service_role = bool(tenant_data.get("serviceRole"))
+                    logger.info(f"[TenantMiddleware] Tenant configurado: {tenant_slug} | Supabase: {supabase_url[:50]}... | serviceRole: {has_service_role}")
                 
             except Exception as e:
                 logger.error(f"Erro ao buscar tenant '{tenant_slug}': {e}")
