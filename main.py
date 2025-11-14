@@ -361,10 +361,18 @@ def _process_upload_transcription(
     url_hash: str, 
     meeting_type: Optional[str] = None,
     include_nlp: bool = True,
-    speaker_labels: bool = True
+    speaker_labels: bool = True,
+    tenant_slug: Optional[str] = None,
+    tenant_data: Optional[dict] = None
 ):
     """Processa transcrição em background para evitar timeout"""
     try:
+        # Restaurar contexto do tenant para a background task
+        if tenant_slug and tenant_data:
+            from middleware.tenant import get_tenant_context
+            tenant_ctx = get_tenant_context()
+            tenant_ctx.set_tenant(tenant_slug, tenant_data)
+            print(f"[BACKGROUND] Contexto do tenant restaurado: {tenant_slug}")
         print(f"[BACKGROUND] Iniciando processamento de {filename}")
         print(f"[BACKGROUND] Configurações: include_nlp={include_nlp}, speaker_labels={speaker_labels}")
         download = DownloadService()
@@ -499,6 +507,12 @@ async def transcribe_upload(
             print(f"[UPLOAD] Erro ao criar registro inicial: {e}")
             # Continuar mesmo se falhar
         
+        # Capturar contexto do tenant antes de iniciar background task
+        from middleware.tenant import get_tenant_context
+        tenant_ctx = get_tenant_context()
+        tenant_slug = tenant_ctx.tenant_slug
+        tenant_data = tenant_ctx.tenant_data
+        
         # Processar em background para não bloquear a resposta HTTP
         background_tasks.add_task(
             _process_upload_transcription, 
@@ -509,7 +523,9 @@ async def transcribe_upload(
             url_hash, 
             meeting_type,
             include_nlp,
-            speaker_labels
+            speaker_labels,
+            tenant_slug,
+            tenant_data
         )
         
         print(f"[UPLOAD] Transcrição agendada em background: {job_id}")
