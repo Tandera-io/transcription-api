@@ -524,22 +524,22 @@ async def transcribe_upload(
         from middleware.tenant import get_tenant_context
         tenant_ctx = get_tenant_context()
         
-        # Debug detalhado
-        print(f"[UPLOAD] DEBUG: tenant_slug = {tenant_ctx.tenant_slug}")
-        print(f"[UPLOAD] DEBUG: tenant_data exists = {bool(tenant_ctx.tenant_data)}")
+        # Log detalhado (INFO para aparecer em produção)
+        print(f"[UPLOAD] tenant_slug = {tenant_ctx.tenant_slug}")
+        print(f"[UPLOAD] tenant_data exists = {bool(tenant_ctx.tenant_data)}")
         if tenant_ctx.tenant_data:
-            print(f"[UPLOAD] DEBUG: tenant_data keys = {list(tenant_ctx.tenant_data.keys())}")
+            print(f"[UPLOAD] tenant_data keys = {list(tenant_ctx.tenant_data.keys())}")
         
         supabase_url = tenant_ctx.get_supabase_url() if tenant_ctx.tenant_data else None
         service_key = tenant_ctx.get_service_key() if tenant_ctx.tenant_data else None
         
-        print(f"[UPLOAD] DEBUG: supabase_url = {supabase_url[:50] if supabase_url else None}")
-        print(f"[UPLOAD] DEBUG: service_key exists = {bool(service_key)}")
+        print(f"[UPLOAD] supabase_url = {supabase_url[:50] if supabase_url else None}...")
+        print(f"[UPLOAD] service_key exists = {bool(service_key)}")
         
         if supabase_url and service_key:
-            print(f"[UPLOAD] ✅ Credenciais capturadas para background task | URL: {supabase_url[:50]}...")
+            print(f"[UPLOAD] ✅ Credenciais capturadas | Tenant: {tenant_ctx.tenant_slug} | URL: {supabase_url[:50]}...")
         else:
-            print(f"[UPLOAD] ❌ AVISO: Credenciais não disponíveis, background task usará fallback")
+            print(f"[UPLOAD] ❌ Credenciais NÃO capturadas | Tenant: {tenant_ctx.tenant_slug} | tenant_data: {bool(tenant_ctx.tenant_data)}")
         
         # Processar em background para não bloquear a resposta HTTP
         background_tasks.add_task(
