@@ -146,7 +146,9 @@ def process_and_save_transcription(
     url_hash: Optional[str] = None,
     meeting_type: Optional[str] = None,
     include_nlp: bool = True,
-    speaker_labels: bool = True
+    speaker_labels: bool = True,
+    supabase_url: Optional[str] = None,
+    service_key: Optional[str] = None
 ):
     # Prompt detalhado (igual ao backend principal)
     prompt = f"""
@@ -254,7 +256,7 @@ REGRAS IMPORTANTES:
         existing = None
 
     if transcription_id is None:
-        res = insert_transcription(data)
+        res = insert_transcription(data, supabase_url=supabase_url, service_key=service_key)
         transcription_id = res.data[0]['id']
         print(f"[DEBUG] Novo registro criado com ID: {transcription_id}")
     else:
@@ -362,17 +364,13 @@ def _process_upload_transcription(
     meeting_type: Optional[str] = None,
     include_nlp: bool = True,
     speaker_labels: bool = True,
-    tenant_slug: Optional[str] = None,
-    tenant_data: Optional[dict] = None
+    supabase_url: Optional[str] = None,
+    service_key: Optional[str] = None
 ):
     """Processa transcrição em background para evitar timeout"""
     try:
-        # Restaurar contexto do tenant para a background task
-        if tenant_slug and tenant_data:
-            from middleware.tenant import get_tenant_context
-            tenant_ctx = get_tenant_context()
-            tenant_ctx.set_tenant(tenant_slug, tenant_data)
-            print(f"[BACKGROUND] Contexto do tenant restaurado: {tenant_slug}")
+        if supabase_url and service_key:
+            print(f"[BACKGROUND] Usando credenciais explícitas | URL: {supabase_url[:50]}...")
         print(f"[BACKGROUND] Iniciando processamento de {filename}")
         print(f"[BACKGROUND] Configurações: include_nlp={include_nlp}, speaker_labels={speaker_labels}")
         download = DownloadService()
@@ -416,7 +414,9 @@ def _process_upload_transcription(
             url_hash=url_hash, 
             meeting_type=meeting_type,
             include_nlp=include_nlp,
-            speaker_labels=speaker_labels
+            speaker_labels=speaker_labels,
+            supabase_url=supabase_url,
+            service_key=service_key
         )
         print(f"[BACKGROUND] Transcrição concluída e salva: {job_id}")
     except Exception as e:
@@ -507,11 +507,16 @@ async def transcribe_upload(
             print(f"[UPLOAD] Erro ao criar registro inicial: {e}")
             # Continuar mesmo se falhar
         
-        # Capturar contexto do tenant antes de iniciar background task
+        # Capturar credenciais do tenant antes de iniciar background task
         from middleware.tenant import get_tenant_context
         tenant_ctx = get_tenant_context()
-        tenant_slug = tenant_ctx.tenant_slug
-        tenant_data = tenant_ctx.tenant_data
+        supabase_url = tenant_ctx.get_supabase_url() if tenant_ctx.tenant_data else None
+        service_key = tenant_ctx.get_service_key() if tenant_ctx.tenant_data else None
+        
+        if supabase_url and service_key:
+            print(f"[UPLOAD] Credenciais capturadas para background task | URL: {supabase_url[:50]}...")
+        else:
+            print(f"[UPLOAD] AVISO: Credenciais não disponíveis, background task usará fallback")
         
         # Processar em background para não bloquear a resposta HTTP
         background_tasks.add_task(
@@ -524,8 +529,8 @@ async def transcribe_upload(
             meeting_type,
             include_nlp,
             speaker_labels,
-            tenant_slug,
-            tenant_data
+            supabase_url,
+            service_key
         )
         
         print(f"[UPLOAD] Transcrição agendada em background: {job_id}")

@@ -109,12 +109,23 @@ def get_supabase_service_client() -> Client:
 get_supabase_admin = get_supabase_service_client
 
 
-def insert_transcription(data):
+def insert_transcription(data, supabase_url: str = None, service_key: str = None):
     """Insere uma nova transcrição no Supabase
     
     Usa SERVICE_ROLE para bypass RLS, pois é uma operação de sistema.
+    
+    Args:
+        data: Dados da transcrição
+        supabase_url: URL do Supabase (opcional, para background tasks)
+        service_key: Service role key (opcional, para background tasks)
     """
-    supabase = get_supabase_service_client()
+    # Se credenciais explícitas foram passadas, usar elas (para background tasks)
+    if supabase_url and service_key:
+        logger.info(f"[Supabase] Usando credenciais explícitas para insert | URL: {supabase_url[:50]}...")
+        supabase = create_client(supabase_url, service_key)
+    else:
+        # Caso contrário, usar contexto (requisições HTTP normais)
+        supabase = get_supabase_service_client()
     
     # Se não tiver user_id, deixar como None (NULL no banco)
     if 'user_id' not in data:
@@ -124,13 +135,24 @@ def insert_transcription(data):
     return result
 
 
-def update_transcription(transcription_id, data):
+def update_transcription(transcription_id, data, supabase_url: str = None, service_key: str = None):
     """Atualiza uma transcrição existente
     
     Usa SERVICE_ROLE para bypass RLS, pois é uma operação de sistema.
+    
+    Args:
+        transcription_id: ID da transcrição
+        data: Dados a atualizar
+        supabase_url: URL do Supabase (opcional, para background tasks)
+        service_key: Service role key (opcional, para background tasks)
     """
     try:
-        supabase = get_supabase_service_client()
+        # Se credenciais explícitas foram passadas, usar elas (para background tasks)
+        if supabase_url and service_key:
+            logger.info(f"[Supabase] Usando credenciais explícitas para update | URL: {supabase_url[:50]}...")
+            supabase = create_client(supabase_url, service_key)
+        else:
+            supabase = get_supabase_service_client()
         print(f"[SUPABASE] Atualizando transcription_id={transcription_id}")
         print(f"[SUPABASE] Campos a atualizar: {list(data.keys())}")
         result = supabase.table("transcriptions").update(data).eq("id", transcription_id).execute()
