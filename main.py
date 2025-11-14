@@ -300,6 +300,19 @@ def health():
     }
 
 
+@app.post("/api/admin/clear-cache")
+def clear_tenant_cache():
+    """Limpa o cache de tenants para forçar nova busca no Registry"""
+    from middleware.tenant import _tenant_cache
+    cache_size = len(_tenant_cache)
+    _tenant_cache.clear()
+    return {
+        "status": "success",
+        "message": f"Cache limpo: {cache_size} entradas removidas",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
 @app.post("/api/transcribe")
 async def transcribe_from_url(req: TranscriptionRequest, current_user: dict = Depends(get_current_user_or_service)):
     try:
