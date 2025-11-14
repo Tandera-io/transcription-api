@@ -232,10 +232,12 @@ class TenantMiddleware(BaseHTTPMiddleware):
             # Determinar se precisa de credenciais de backend (serviceRole)
             # Endpoints que fazem INSERT/UPDATE no Supabase precisam de serviceRole
             needs_backend_creds = any([
-                request.url.path.startswith("/upload"),
-                request.url.path.startswith("/transcribe"),
-                request.url.path.startswith("/process"),
+                "/upload" in request.url.path,
+                "/transcribe" in request.url.path,
+                "/process" in request.url.path,
             ])
+            
+            logger.info(f"[TenantMiddleware] Path: {request.url.path} | needs_backend_creds: {needs_backend_creds}")
             
             # Buscar dados do tenant no Registry
             try:
