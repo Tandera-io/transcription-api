@@ -4,14 +4,21 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
 import jwt
 import os
+import httpx
+import logging
 from supabase import create_client, Client
 
-# Configuração do Supabase
+logger = logging.getLogger(__name__)
+
+# Configuração do Supabase (fallback para tenant padrão)
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY') or os.getenv('SUPABASE_SERVICE_KEY')
 SUPABASE_JWT_SECRET = os.getenv('SUPABASE_JWT_SECRET')
 
 SERVICE_API_KEY = os.getenv('TRANSCRIPTION_SERVICE_API_KEY')
+
+# Cache para JWT secrets por tenant
+_jwt_secret_cache = {}
 
 # Inicializar apenas se todas as variáveis estiverem presentes
 supabase: Client = None
@@ -21,27 +28,78 @@ else:
     print("⚠️  Supabase não configurado - algumas variáveis de ambiente estão ausentes")
 security = HTTPBearer(auto_error=False)
 
+async def get_tenant_jwt_secret() -> str:
+    """
+    Obtém o JWT secret do tenant atual ou do fallback.
+    Suporta multi-tenancy: busca o JWT secret do tenant ativo primeiro.
+    """
+    # Tentar obter JWT secret do contexto do tenant (multi-tenancy)
+    try:
+        from middleware.tenant import get_tenant_context
+        tenant_ctx = get_tenant_context()
+        
+        if tenant_ctx.tenant_slug and tenant_ctx.tenant_data:
+            # Verificar cache primeiro
+            if tenant_ctx.tenant_slug in _jwt_secret_cache:
+                logger.debug(f"[Auth] JWT secret do tenant '{tenant_ctx.tenant_slug}' encontrado no cache")
+                return _jwt_secret_cache[tenant_ctx.tenant_slug]
+            
+            # Buscar JWT secret do Registry para este tenant
+            registry_url = os.getenv("REGISTRY_API_URL", "http://localhost:3000")
+            if registry_url:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        url = f"{registry_url}/api/tenants/by-slug/{tenant_ctx.tenant_slug}/backend-credentials"
+                        service_token = os.getenv("REGISTRY_SERVICE_TOKEN")
+                        
+                        if not service_token:
+                            logger.warning("[Auth] REGISTRY_SERVICE_TOKEN não configurado, usando JWT secret padrão")
+                        else:
+                            headers = {"X-Registry-Service-Token": service_token}
+                            response = await client.get(url, headers=headers)
+                            
+                            if response.status_code == 200:
+                                data = response.json()
+                                tenant_data = data.get("tenant", {})
+                                jwt_secret = tenant_data.get("jwtSecret")
+                                
+                                if jwt_secret:
+                                    _jwt_secret_cache[tenant_ctx.tenant_slug] = jwt_secret
+                                    logger.info(f"[Auth] JWT secret do tenant '{tenant_ctx.tenant_slug}' carregado do Registry")
+                                    return jwt_secret
+                except Exception as e:
+                    logger.warning(f"[Auth] Erro ao buscar JWT secret do Registry para tenant '{tenant_ctx.tenant_slug}': {e}")
+    except Exception as e:
+        logger.debug(f"[Auth] Tenant context não disponível, usando JWT secret padrão: {e}")
+    
+    # Fallback para JWT secret padrão do .env
+    if not SUPABASE_JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT Secret não configurado")
+    
+    logger.debug("[Auth] Usando JWT secret padrão do .env")
+    return SUPABASE_JWT_SECRET
+
 class AuthMiddleware:
     """Middleware para autenticação usando Supabase Auth"""
     
     @staticmethod
-    def verify_token(token: str) -> dict:
-        """Verifica e decodifica o token JWT do Supabase"""
-        if not SUPABASE_JWT_SECRET:
-            raise HTTPException(status_code=500, detail="JWT Secret não configurado")
+    async def verify_token(token: str) -> dict:
+        """Verifica e decodifica o token JWT do Supabase (tenant-aware)"""
+        jwt_secret = await get_tenant_jwt_secret()
             
         try:
             # Decodificar o token JWT
             payload = jwt.decode(
                 token, 
-                SUPABASE_JWT_SECRET, 
+                jwt_secret, 
                 algorithms=["HS256"],
                 audience="authenticated"
             )
             return payload
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Token expirado")
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"[Auth] Token inválido: {e}")
             raise HTTPException(status_code=401, detail="Token inválido")
     
     @staticmethod
@@ -62,7 +120,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Token de autenticação necessário")
     
     token = credentials.credentials
-    payload = AuthMiddleware.verify_token(token)
+    payload = await AuthMiddleware.verify_token(token)
     user = AuthMiddleware.get_user_from_token(payload)
     
     return user
@@ -75,10 +133,19 @@ async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = 
     
     try:
         token = credentials.credentials
-        payload = AuthMiddleware.verify_token(token)
+        jwt_secret = await get_tenant_jwt_secret()
+        
+        # ✅ Verificar token silenciosamente (sem warnings)
+        payload = jwt.decode(
+            token, 
+            jwt_secret, 
+            algorithms=["HS256"],
+            audience="authenticated"
+        )
         user = AuthMiddleware.get_user_from_token(payload)
         return user
-    except HTTPException:
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError, HTTPException):
+        # ✅ Retornar None silenciosamente para autenticação opcional
         return None
 
 async def get_current_user_or_service(
@@ -105,7 +172,7 @@ async def get_current_user_or_service(
         raise HTTPException(status_code=401, detail="Autenticação necessária (JWT ou API Key)")
     
     token = credentials.credentials
-    payload = AuthMiddleware.verify_token(token)
+    payload = await AuthMiddleware.verify_token(token)
     user = AuthMiddleware.get_user_from_token(payload)
     user["is_service"] = False
     
